@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Gratis Community
  * Plugin URI: https://github.com/juslintek/gratis-community
- * Description: Social features: user profiles, activity feed, messaging, and groups. Replaces BuddyPress/PeepSo ($299/yr).
+ * Description: Social features: user profiles, activity feed, messaging, and groups.
  * Version: 1.0.0
  * Requires at least: 6.0
  * Requires PHP: 8.1
