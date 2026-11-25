@@ -15,7 +15,7 @@ final class Community {
             'labels'       => ['name' => __('Activity', 'gratis-community')],
             'public'       => false,
             'show_ui'      => true,
-            'show_in_rest' => true,
+            'show_in_rest' => false,
             'menu_icon'    => 'dashicons-buddicons-activity',
         ]);
 
@@ -33,12 +33,17 @@ final class Community {
             'labels'       => ['name' => __('Messages', 'gratis-community')],
             'public'       => false,
             'show_ui'      => false,
-            'show_in_rest' => true,
+            'show_in_rest' => false,
         ]);
 
-        register_meta('user', '_gratis_bio', ['type' => 'string', 'single' => true, 'show_in_rest' => true, 'sanitize_callback' => 'sanitize_textarea_field']);
-        register_meta('user', '_gratis_avatar_url', ['type' => 'string', 'single' => true, 'show_in_rest' => true, 'sanitize_callback' => 'esc_url_raw']);
-        register_meta('user', '_gratis_social', ['type' => 'string', 'single' => true, 'show_in_rest' => true, 'sanitize_callback' => 'esc_url_raw']);
+        $user_meta_auth = static function ($allowed, string $meta_key, $object_id = 0): bool {
+            unset($allowed, $meta_key);
+            $target_id = (int) $object_id;
+            return current_user_can('edit_users') || ($target_id > 0 && $target_id === get_current_user_id());
+        };
+        register_meta('user', '_gratis_bio', ['type' => 'string', 'single' => true, 'show_in_rest' => true, 'sanitize_callback' => 'sanitize_textarea_field', 'auth_callback' => $user_meta_auth]);
+        register_meta('user', '_gratis_avatar_url', ['type' => 'string', 'single' => true, 'show_in_rest' => true, 'sanitize_callback' => 'esc_url_raw', 'auth_callback' => $user_meta_auth]);
+        register_meta('user', '_gratis_social', ['type' => 'string', 'single' => true, 'show_in_rest' => true, 'sanitize_callback' => 'esc_url_raw', 'auth_callback' => $user_meta_auth]);
 
         add_shortcode('gratis-profile', [__CLASS__, 'profileShortcode']);
         add_shortcode('gratis-activity-feed', [__CLASS__, 'feedShortcode']);
@@ -65,7 +70,7 @@ final class Community {
             'methods'             => 'GET',
             'permission_callback' => '__return_true',
             'callback'            => function () {
-                $activities = get_posts(['post_type' => 'gratis_activity', 'numberposts' => 20]);
+                $activities = get_posts(['post_type' => 'gratis_activity', 'post_status' => 'publish', 'numberposts' => 20]);
                 return new \WP_REST_Response(array_map(static fn($a) => [
                     'id'      => $a->ID,
                     'content' => $a->post_content,
@@ -79,15 +84,34 @@ final class Community {
             'methods'             => 'POST',
             'permission_callback' => 'is_user_logged_in',
             'callback'            => function (\WP_REST_Request $req) {
-                $data = $req->get_json_params();
-                $id   = wp_insert_post([
+                $sender_id = get_current_user_id();
+                $rate_key  = 'gratis_community_msg_' . $sender_id;
+                $attempts  = (int) get_transient($rate_key);
+                if ($attempts >= 20) {
+                    return new \WP_REST_Response(['error' => __('Rate limit exceeded. Please try again later.', 'gratis-community')], 429);
+                }
+
+                $data      = (array) $req->get_json_params();
+                $recipient = absint($data['to'] ?? 0);
+                $message   = trim(sanitize_textarea_field((string) ($data['message'] ?? '')));
+
+                if ($recipient <= 0 || ! get_userdata($recipient)) {
+                    return new \WP_REST_Response(['error' => __('Valid recipient is required.', 'gratis-community')], 400);
+                }
+                if ('' === $message) {
+                    return new \WP_REST_Response(['error' => __('Message cannot be empty.', 'gratis-community')], 400);
+                }
+
+                set_transient($rate_key, $attempts + 1, HOUR_IN_SECONDS);
+
+                $id = wp_insert_post([
                     'post_type'    => 'gratis_message',
-                    'post_status'  => 'publish',
-                    'post_author'  => get_current_user_id(),
-                    'post_content' => sanitize_textarea_field((string) ($data['message'] ?? '')),
-                    'meta_input'   => ['_recipient' => (int) ($data['to'] ?? 0)],
+                    'post_status'  => 'private',
+                    'post_author'  => $sender_id,
+                    'post_content' => $message,
+                    'meta_input'   => ['_recipient' => $recipient],
                 ]);
-                return new \WP_REST_Response(['sent' => ! is_wp_error($id), 'id' => $id]);
+                return new \WP_REST_Response(['sent' => ! is_wp_error($id), 'id' => is_wp_error($id) ? 0 : $id]);
             },
         ]);
     }
